@@ -31,10 +31,11 @@ AI_SEMICON_SECTORS = {
 }
 
 def send_telegram_message(message):
-    """發送訊息至 Telegram"""
+    """發送訊息至 Telegram (含詳細除錯 Log)"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("未設定 Telegram Token/Chat ID，僅於 Terminal 印出：\n", message)
+        print("⚠️ 未偵測到 Telegram Token 或 Chat ID Secrets！")
         return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -42,9 +43,14 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        res_data = response.json()
+        if not res_data.get("ok"):
+            print(f"❌ Telegram API 回傳錯誤 [{response.status_code}]: {res_data.get('description')}")
+        else:
+            print("📩 Telegram 訊息發送成功！")
     except Exception as e:
-        print(f"Telegram 發送失敗: {e}")
+        print(f"❌ 網路連線錯誤: {e}")
 
 def evaluate_ai_stock(ticker_symbol, sector_category):
     """根據 AI 供應鏈分工計算最適估值"""
