@@ -126,19 +126,30 @@ def evaluate_ai_stock(stock_info, sector_category):
             f"\n💡 *評語*：{'🟢 當前股價已進入安全邊際區！' if current_price <= discount_price else '🟡 處於成長溢價區，留意 AI 資本支出釋出狀況。'}"
         ])
 
-    # 邏輯 B: 晶圓代工 / 設備 (EV/EBITDA 模型)
+    # 邏輯 B: 晶圓代工 / 設備 (EV/EBITDA 模型 + 數據異常降級防護)
     elif sector_category == "AI_FOUNDRY_COWOS":
         ev_ebitda = info.get("enterpriseToEbitda", 0) or 0.0
-        target_ev_ebitda = 12.0
-        fair_price = current_price * (target_ev_ebitda / ev_ebitda) if ev_ebitda > 0 else current_price
+        target_ev_ebitda = 15.0  # 半導體設備與先進製程合理 EV/EBITDA 約 15x
+        
+        # 防呆驗證：若 EV/EBITDA 數據合理 (5x ~ 50x 之間)，使用 EV/EBITDA 模型
+        if 5.0 <= ev_ebitda <= 50.0:
+            fair_price = current_price * (target_ev_ebitda / ev_ebitda)
+            model_name = f"EV/EBITDA 模型 ({ev_ebitda:.1f}x)"
+        else:
+            # 數據異常 (如 ASML 單位錯位) 時，自動降級切換為 P/E 估值模型
+            fair_pe = 28.0 if "ASML" in ticker_symbol else 22.0  # ASML 享有較高壟斷溢價
+            fair_price = eps_ttm * fair_pe
+            model_name = f"P/E 備用模型 (數據護欄啟用, 採 {fair_pe:.0f}x PE)"
+
+        # 安全邊際價 (85折)
         discount_price = fair_price * 0.85
 
         report_lines.extend([
-            f"📊 *估值模型*：`EV/EBITDA 重資產還原模型`",
-            f"• 當前 EV/EBITDA：`{ev_ebitda:.2f}x`",
-            f"• **合理目標價 ({target_ev_ebitda:.1f}x EV/EBITDA)**：`{currency_symbol}{fair_price:.2f}`",
+            f"📊 *估值模型*：`{model_name}`",
+            f"• 近四季 EPS：`{currency_symbol}{eps_ttm:.2f}` | 目前 P/E：`{pe_ratio:.1f}x`",
+            f"• **合理目標價**：`{currency_symbol}{fair_price:.2f}`",
             f"• **85 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
-            f"\n💡 *評語*：{'🟢 產能滿載且估值偏低，具安全性！' if current_price <= discount_price else '🟡 先進封裝 CoWoS 產能緊繃，股價已部分反應。'}"
+            f"\n💡 *評語*：{'🟢 產能滿載且估值偏低，具安全性！' if current_price <= discount_price else '🟡 先進封裝/設備需求強勁，股價已部分反應。'}"
         ])
 
     # 邏輯 C: 記憶體 (P/B 淨值比)
