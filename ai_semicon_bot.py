@@ -6,9 +6,9 @@ import yfinance as yf
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 2. AI 半導體供應鏈監控清單 (含市場標示與精準中文名稱)
+# 2. AI 半導體與伺服器供應鏈監控清單 (含市場標示與中文名稱)
 AI_SEMICON_SECTORS = {
-    # A. AI 晶片 / IP / 客製化晶片 ASIC (適用 P/E & PEG 成長模型)
+    # A. AI 晶片 / IP / 客製化晶片 ASIC (適用 外資 Forward PE 模型)
     "AI_CHIP_DESIGN": {
         "name_zh": "AI晶片 / IP / ASIC",
         "stocks": [
@@ -22,7 +22,7 @@ AI_SEMICON_SECTORS = {
             {"ticker": "3035.TW", "name": "智原", "market": "TW"}
         ]
     },
-    # B. 先進製程晶圓代工 / 先進封裝 CoWoS / 設備 (適用 EV/EBITDA 模型)
+    # B. 先進製程晶圓代工 / 先進封裝 CoWoS / 設備 (適用 EV/EBITDA + PE 雙模護欄)
     "AI_FOUNDRY_COWOS": {
         "name_zh": "晶圓代工 / CoWoS / 設備",
         "stocks": [
@@ -33,7 +33,7 @@ AI_SEMICON_SECTORS = {
             {"ticker": "AMAT", "name": "應用材料", "market": "US"}
         ]
     },
-    # C. HBM 高頻寬記憶體 / 記憶體 (適用 P/B 週期模型)
+    # C. HBM 高頻寬記憶體 / 記憶體 (適用 P/B 景氣週期模型)
     "AI_MEMORY_HBM": {
         "name_zh": "HBM / 記憶體",
         "stocks": [
@@ -41,7 +41,7 @@ AI_SEMICON_SECTORS = {
             {"ticker": "2408.TW", "name": "南亞科", "market": "TW"}
         ]
     },
-    # D. AI 伺服器代工 / 組裝 (適用 P/E 傳統估值 + 轉型溢價)
+    # D. AI 伺服器代工 / 組裝 (適用 Forward PE + 伺服器溢價)
     "AI_SERVER_OEM": {
         "name_zh": "AI 伺服器組裝",
         "stocks": [
@@ -55,9 +55,9 @@ AI_SEMICON_SECTORS = {
 }
 
 def send_telegram_message(message):
-    """發送訊息至 Telegram"""
+    """發送訊息至 Telegram (含詳細除錯 Log)"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("未設定 Telegram Token 或 Chat ID，僅於 Terminal 印出：\n", message)
+        print("⚠️ 未設定 Telegram Secrets，僅於控制台印出：\n", message)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -69,12 +69,12 @@ def send_telegram_message(message):
         response = requests.post(url, json=payload, timeout=10)
         res_data = response.json()
         if not res_data.get("ok"):
-            print(f"❌ Telegram 發送失敗 [{response.status_code}]: {res_data.get('description')}")
+            print(f"❌ Telegram API 回傳錯誤 [{response.status_code}]: {res_data.get('description')}")
     except Exception as e:
-        print(f"❌ 發送連線失敗: {e}")
+        print(f"❌ 發送訊息網路連線失敗: {e}")
 
 def evaluate_ai_stock(stock_info, sector_category):
-    """計算估值報告"""
+    """根據外資法人模型與各產業特性計算最適估值"""
     ticker_symbol = stock_info["ticker"]
     stock_name_zh = stock_info["name"]
     market_flag = "🇹🇼 台股" if stock_info["market"] == "TW" else "🇺🇸 美股"
@@ -85,7 +85,7 @@ def evaluate_ai_stock(stock_info, sector_category):
     
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
     if not current_price or current_price == 0:
-        raise ValueError(f"Yahoo Finance 無法取得 `{ticker_symbol}` 報價數據。")
+        raise ValueError(f"Yahoo Finance 無法取得 `{ticker_symbol}` 即時報價數據。")
         
     eps_ttm = info.get("trailingEps", 0) or 0.0
     bvps = info.get("bookValue", 0) or 0.0
@@ -101,55 +101,49 @@ def evaluate_ai_stock(stock_info, sector_category):
         f"----------------------------------"
     ]
     
-    # 邏輯 A: IC 設計 / IP / ASIC (動態 PEG + 產業底線 P/E 護欄)
+    # --------------------------------------------------------------------------
+    # 邏輯 A: IC 設計 / IP / ASIC (外資 Forward PE 預估模型)
+    # --------------------------------------------------------------------------
     if sector_category == "AI_CHIP_DESIGN":
-        raw_growth = info.get("earningsGrowth", 0.20) or 0.20
+        raw_growth = info.get("earningsGrowth", 0.25) or 0.25
+        # 防呆保底預估成長率 (外資評估 AI IC 產業預期雙位數成長)
+        growth_rate = max(raw_growth, 0.20)
         
-        # 1. 成長率修正 (避免負數與極端值)
-        if raw_growth <= 0.05:
-            growth_for_peg = 0.20 # 淡季或衰退期保底給予 20% 成長率預估
-            growth_note = f"{raw_growth*100:.1f}% (採保底值 20.0%)"
-        else:
-            growth_for_peg = raw_growth
-            growth_note = f"{growth_for_peg * 100:.1f}%"
-
-        # 2. 動態目標 P/E 計算 (針對高成長放寬上限至 100x，並設定產業底線 P/E)
-        calculated_pe = growth_for_peg * 100
+        # 演算 Forward EPS (未來 12 個月預估 EPS)
+        forward_eps = eps_ttm * (1 + growth_rate) if eps_ttm > 0 else eps_ttm
         
-        # 針對千元高價 ASIC / 純 IP 股 (如 M31, 世芯, 創意) 給予更高的底線 P/E 護欄
-        is_high_valuation_ip = ticker_symbol in ["6643.TWO", "3661.TW", "3443.TW"]
-        min_pe_floor = 35.0 if is_high_valuation_ip else 20.0
-        max_pe_cap = 120.0 if is_high_valuation_ip else 80.0
-        
-        target_pe = min(max(calculated_pe, min_pe_floor), max_pe_cap)
-        fair_price = eps_ttm * target_pe
+        # 外資評價分流：純 IP/高價 ASIC (給予高溢價) vs 一般 IC 設計
+        is_ip_asic = ticker_symbol in ["6643.TWO", "3661.TW", "3443.TW"]
+        target_forward_pe = 45.0 if is_ip_asic else 30.0
+        fair_price = forward_eps * target_forward_pe if forward_eps > 0 else current_price * 0.9
         discount_price = fair_price * 0.85
 
         report_lines.extend([
-            f"📊 *估值模型*：`動態 PEG 模型 (目標 PE: {target_pe:.1f}x)`",
+            f"📊 *估值模型*：`外資 Forward PE 模型 ({target_forward_pe:.0f}x PE)`",
             f"• 近四季 EPS：`{currency_symbol}{eps_ttm:.2f}` | 目前 P/E：`{pe_ratio:.1f}x`",
-            f"• 預估盈餘成長率：`{growth_note}`",
-            f"• **合理目標價**：`{currency_symbol}{fair_price:.2f}`",
+            f"• 預估未來 12M EPS：`{currency_symbol}{forward_eps:.2f}` (預估成長 {growth_rate*100:.1f}%)",
+            f"• **外資合理目標價**：`{currency_symbol}{fair_price:.2f}`",
             f"• **85 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
-            f"\n💡 *評語*：{'🟢 股價已落入安全邊際建倉區！' if current_price <= discount_price else '🟡 享有 AI/ASIC 溢價，留意 NRE 營收認列與成長續航力。'}"
+            f"\n💡 *評語*：{'🟢 進入外資安全邊際買進區！' if current_price <= discount_price else '🟡 股價已反映未來成長預期，留意追高風險。'}"
         ])
 
-    # 邏輯 B: 晶圓代工 / 設備 (EV/EBITDA 模型 + 數據異常降級防護)
+    # --------------------------------------------------------------------------
+    # 邏輯 B: 晶圓代工 / 設備 (EV/EBITDA + 數據異常降級 PE 防爆護欄)
+    # --------------------------------------------------------------------------
     elif sector_category == "AI_FOUNDRY_COWOS":
         ev_ebitda = info.get("enterpriseToEbitda", 0) or 0.0
-        target_ev_ebitda = 15.0  # 半導體設備與先進製程合理 EV/EBITDA 約 15x
         
-        # 防呆驗證：若 EV/EBITDA 數據合理 (5x ~ 50x 之間)，使用 EV/EBITDA 模型
+        # 數據驗證：若 EV/EBITDA 正常 (5x~50x)，使用 EV/EBITDA 模型
         if 5.0 <= ev_ebitda <= 50.0:
+            target_ev_ebitda = 15.0
             fair_price = current_price * (target_ev_ebitda / ev_ebitda)
             model_name = f"EV/EBITDA 模型 ({ev_ebitda:.1f}x)"
         else:
-            # 數據異常 (如 ASML 單位錯位) 時，自動降級切換為 P/E 估值模型
-            fair_pe = 28.0 if "ASML" in ticker_symbol else 22.0  # ASML 享有較高壟斷溢價
+            # 數據異常 (如 ASML 單位錯位) 時，自動切換至 P/E 備用模型
+            fair_pe = 28.0 if "ASML" in ticker_symbol else 22.0
             fair_price = eps_ttm * fair_pe
-            model_name = f"P/E 備用模型 (數據護欄啟用, 採 {fair_pe:.0f}x PE)"
+            model_name = f"P/E 備用模型 (啟用數據護欄, 採 {fair_pe:.0f}x PE)"
 
-        # 安全邊際價 (85折)
         discount_price = fair_price * 0.85
 
         report_lines.extend([
@@ -157,10 +151,12 @@ def evaluate_ai_stock(stock_info, sector_category):
             f"• 近四季 EPS：`{currency_symbol}{eps_ttm:.2f}` | 目前 P/E：`{pe_ratio:.1f}x`",
             f"• **合理目標價**：`{currency_symbol}{fair_price:.2f}`",
             f"• **85 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
-            f"\n💡 *評語*：{'🟢 產能滿載且估值偏低，具安全性！' if current_price <= discount_price else '🟡 先進封裝/設備需求強勁，股價已部分反應。'}"
+            f"\n💡 *評語*：{'🟢 產能滿載且估值偏低，具安全性！' if current_price <= discount_price else '🟡 先進封裝與設備需求強勁，股價已部分反應。'}"
         ])
 
-    # 邏輯 C: 記憶體 (P/B 淨值比)
+    # --------------------------------------------------------------------------
+    # 邏輯 C: 記憶體 (P/B 週期模型)
+    # --------------------------------------------------------------------------
     elif sector_category == "AI_MEMORY_HBM":
         low_pb, fair_pb = 1.2, 1.8
         buy_target_price = bvps * low_pb
@@ -174,32 +170,40 @@ def evaluate_ai_stock(stock_info, sector_category):
             f"\n💡 *評語*：{'🟢 進入 P/B 低估建倉區！' if pb_ratio <= low_pb else '🟡 HBM 供不應求，注意景氣擴產週期。'}"
         ])
 
-    # 邏輯 D: 伺服器代工 (P/E 評估)
+    # --------------------------------------------------------------------------
+    # 邏輯 D: AI 伺服器代工 (Forward PE 伺服器轉型溢價模型)
+    # --------------------------------------------------------------------------
     else:
-        fair_pe = 16.0
-        fair_price = eps_ttm * fair_pe
-        discount_price = fair_price * 0.8
+        raw_growth = info.get("earningsGrowth", 0.20) or 0.20
+        growth_rate = max(raw_growth, 0.15)
+        forward_eps = eps_ttm * (1 + growth_rate) if eps_ttm > 0 else eps_ttm
+        
+        fair_pe = 18.0  # AI 伺服器帶動毛利率上升，給予 18x 溢價
+        fair_price = forward_eps * fair_pe
+        discount_price = fair_price * 0.85
 
         report_lines.extend([
-            f"📊 *估值模型*：`AI 伺服器代工 PE 模型`",
+            f"📊 *估值模型*：`AI 伺服器 Forward PE 模型 (18.0x PE)`",
             f"• 近四季 EPS：`{currency_symbol}{eps_ttm:.2f}` | 目前 P/E：`{pe_ratio:.1f}x`",
-            f"• **合理目標價 (16.0x P/E)**：`{currency_symbol}{fair_price:.2f}`",
-            f"• **8 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
+            f"• 預估未來 12M EPS：`{currency_symbol}{forward_eps:.2f}`",
+            f"• **合理目標價**：`{currency_symbol}{fair_price:.2f}`",
+            f"• **85 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
             f"\n💡 *評語*：{'🟢 股價低於伺服器轉型估值下限！' if current_price <= discount_price else '🟡 需觀察 AI 伺服器出貨比重與毛利率變化。'}"
         ])
 
     return "\n".join(report_lines)
 
 def run_ai_valuation_job():
-    """執行全自動估值評估流程"""
+    """執行全自動估值評估流程 (含完整 Try-Except 防護)"""
     for sector_key, sector_info in AI_SEMICON_SECTORS.items():
         for stock_info in sector_info["stocks"]:
             ticker = stock_info["ticker"]
             try:
                 report = evaluate_ai_stock(stock_info, sector_key)
                 send_telegram_message(report)
-                print(f"✅ 成功發送 [{stock_info['market']}] {ticker} ({stock_info['name']}) 估值報告")
+                print(f"✅ 成功計算並發送 [{stock_info['market']}] {ticker} ({stock_info['name']}) 估值報告")
             except Exception as e:
+                # 單一股票異常時自動跳過，不影響整個 workflow
                 print(f"⚠️ 跳過 {ticker}：{e}")
 
 if __name__ == "__main__":
