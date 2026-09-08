@@ -101,29 +101,37 @@ def evaluate_ai_stock(stock_info, sector_category):
         f"----------------------------------"
     ]
     
-    # 邏輯 A: IC 設計 / IP (PEG 模型 + 負數/低成長率防護)
+    # 邏輯 A: IC 設計 / IP / ASIC (動態 PEG + 產業底線 P/E 護欄)
     if sector_category == "AI_CHIP_DESIGN":
-        raw_growth = info.get("earningsGrowth", 0.15) or 0.15
-        # 防護：若成長率 <= 5% (含負值)，自動保底採用 15.0%
+        raw_growth = info.get("earningsGrowth", 0.20) or 0.20
+        
+        # 1. 成長率修正 (避免負數與極端值)
         if raw_growth <= 0.05:
-            growth_for_peg = 0.15
-            growth_note = f"{raw_growth*100:.1f}% (採保底值 15.0%)"
+            growth_for_peg = 0.20 # 淡季或衰退期保底給予 20% 成長率預估
+            growth_note = f"{raw_growth*100:.1f}% (採保底值 20.0%)"
         else:
             growth_for_peg = raw_growth
             growth_note = f"{growth_for_peg * 100:.1f}%"
 
-        # 目標 P/E 限制在 12x ~ 50x 避免過度極端
-        target_pe = min(max(growth_for_peg * 100, 12.0), 50.0)
+        # 2. 動態目標 P/E 計算 (針對高成長放寬上限至 100x，並設定產業底線 P/E)
+        calculated_pe = growth_for_peg * 100
+        
+        # 針對千元高價 ASIC / 純 IP 股 (如 M31, 世芯, 創意) 給予更高的底線 P/E 護欄
+        is_high_valuation_ip = ticker_symbol in ["6643.TWO", "3661.TW", "3443.TW"]
+        min_pe_floor = 35.0 if is_high_valuation_ip else 20.0
+        max_pe_cap = 120.0 if is_high_valuation_ip else 80.0
+        
+        target_pe = min(max(calculated_pe, min_pe_floor), max_pe_cap)
         fair_price = eps_ttm * target_pe
-        discount_price = fair_price * 0.8
+        discount_price = fair_price * 0.85
 
         report_lines.extend([
-            f"📊 *估值模型*：`PEG 成長模型 (高研發/輕資產)`",
+            f"📊 *估值模型*：`動態 PEG 模型 (目標 PE: {target_pe:.1f}x)`",
             f"• 近四季 EPS：`{currency_symbol}{eps_ttm:.2f}` | 目前 P/E：`{pe_ratio:.1f}x`",
             f"• 預估盈餘成長率：`{growth_note}`",
-            f"• **PEG=1.0 合理目標價**：`{currency_symbol}{fair_price:.2f}`",
-            f"• **8 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
-            f"\n💡 *評語*：{'🟢 當前股價已進入安全邊際區！' if current_price <= discount_price else '🟡 處於成長溢價區，留意 AI 資本支出釋出狀況。'}"
+            f"• **合理目標價**：`{currency_symbol}{fair_price:.2f}`",
+            f"• **85 折安全邊際買進價**：`{currency_symbol}{discount_price:.2f}`",
+            f"\n💡 *評語*：{'🟢 股價已落入安全邊際建倉區！' if current_price <= discount_price else '🟡 享有 AI/ASIC 溢價，留意 NRE 營收認列與成長續航力。'}"
         ])
 
     # 邏輯 B: 晶圓代工 / 設備 (EV/EBITDA 模型 + 數據異常降級防護)
