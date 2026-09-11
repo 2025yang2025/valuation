@@ -6,72 +6,51 @@ import yfinance as yf
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 2. 手動補充/特定分類對照表 (其餘未列出的台股/美股會自動走 GENERAL 成熟模型)
+# 2. 精選台美股前 10 大半導體指標股
+TOP_10_TICKERS = [
+    # 美股前 5 大指標股
+    "NVDA",  # 輝達 (AI 晶片龍頭)
+    "AVGO",  # 博通 (客製化 ASIC / 網通)
+    "MU",  # 美光 (HBM / 記憶體)
+    "AMD",  # 超微 (CPU / GPU)
+    "QCOM",  # 高通 (通訊 IC 設計)
+    # 台股前 5 大指標股
+    "2330.TW",  # 台積電 (晶圓代工龍頭)
+    "2454.TW",  # 聯發科 (IC 設計龍頭)
+    "3711.TW",  # 日月光投控 (封測龍頭)
+    "3661.TW",  # 世芯-KY (IP/ASIC 設計)
+    "2408.TW",  # 南亞科 (記憶體指標)
+]
+
+# 3. 產業分類對照表
 SECTOR_MAP = {
-    "IC_DESIGN": [
-        "NVDA",
-        "AMD",
-        "AVGO",
-        "QCOM",
-        "2454.TW",
-        "3661.TW",
-        "3443.TW",
-        "6643.TW",
-    ],
-    "FOUNDRY_CAPEX": [
-        "TSM",
-        "2330.TW",
-        "3711.TW",
-        "2303.TW",
-        "2379.TW",
-        "ASML",
-        "AMAT",
-        "LRCX",
-    ],
+    "IC_DESIGN": ["NVDA", "AMD", "AVGO", "QCOM", "2454.TW", "3661.TW"],
+    "FOUNDRY_CAPEX": ["2330.TW", "3711.TW"],
     "AI_MEMORY_HBM": ["MU"],
-    "MEMORY_CYCLE": ["2408.TW", "2344.TW", "2451.TW", "WDC", "SNCX"],
+    "MEMORY_CYCLE": ["2408.TW"],
+}
+
+# 4. 中文名稱對照表
+STOCK_NAME_ZH = {
+    "NVDA": "輝達",
+    "AVGO": "博通",
+    "MU": "美光",
+    "AMD": "超微",
+    "QCOM": "高通",
+    "2330.TW": "台積電",
+    "2454.TW": "聯發科",
+    "3711.TW": "日月光投控",
+    "3661.TW": "世芯-KY",
+    "2408.TW": "南亞科",
 }
 
 
-def get_auto_tickers():
-    """自動搜尋並抓取台股與美股半導體標的清單"""
-    # 美股核心熱門半導體標的
-    us_semicon_tickers = [
-        "NVDA",
-        "AMD",
-        "AVGO",
-        "TSM",
-        "MU",
-        "ASML",
-        "AMAT",
-        "QCOM",
-        "LRCX",
-    ]
-
-    # 自動抓取台股半導體業個股 (使用 FinMind 免費 API)
-    tw_semicon_tickers = []
-    try:
-        url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo"
-        res = requests.get(url, timeout=10).json()
-        data = res.get("data", [])
-
-        # 過濾出「半導體業」且代碼為 4 碼的普通股
-        tw_semicon_tickers = [
-            f"{item['stock_id']}.TW"
-            for item in data
-            if item.get("industry_category") == "半導體業"
-            and len(item["stock_id"]) == 4
-        ]
-        print(
-            f"🔍 已自動搜尋並抓取到 {len(tw_semicon_tickers)} 檔台股半導體個股。"
-        )
-    except Exception as e:
-        print(f"⚠️ 自動抓取台股清單失敗，改採預設關鍵標的: {e}")
-        tw_semicon_tickers = ["2330.TW", "2454.TW", "3661.TW", "2408.TW"]
-
-    # 合併清單並去重
-    full_list = list(dict.fromkeys(us_semicon_tickers + tw_semicon_tickers))
-    return full_list
+def get_display_name(ticker_symbol, info):
+    """取得中文名稱，若無對照則使用預設名稱"""
+    symbol_upper = ticker_symbol.upper()
+    if symbol_upper in STOCK_NAME_ZH:
+        return STOCK_NAME_ZH[symbol_upper]
+    return info.get("shortName") or info.get("longName") or ticker_symbol
 
 
 def send_telegram_message(message):
@@ -91,10 +70,10 @@ def send_telegram_message(message):
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=15)
         res_data = response.json()
         if res_data.get("ok"):
-            print("✅ Telegram 訊息發送成功！")
+            print("✅ Telegram 彙整報告發送成功！")
         else:
             print(
                 f"❌ Telegram API 拒絕 [{response.status_code}]: {res_data.get('description')}"
@@ -115,9 +94,6 @@ def get_accurate_price(stock):
         return hist_price
 
     if hist_price and (abs(price - hist_price) / hist_price > 0.30):
-        print(
-            f"⚠️ 股價錯位 (Info: {price}, K線: {hist_price})，修正採用 K線價格。"
-        )
         return hist_price
 
     return price
@@ -153,7 +129,7 @@ def get_sector_type(ticker_symbol):
 
 
 def evaluate_stock(ticker_symbol):
-    """估值運算核心"""
+    """估值運算核心 (含成長率平滑護欄與中文名稱)"""
     stock = yf.Ticker(ticker_symbol)
     info = stock.info
 
@@ -161,7 +137,7 @@ def evaluate_stock(ticker_symbol):
     if not current_price or current_price == 0:
         raise ValueError(f"無法取得 {ticker_symbol} 即時股價。")
 
-    stock_name = info.get("shortName", ticker_symbol)
+    stock_name = get_display_name(ticker_symbol, info)
     currency_symbol = "$" if info.get("currency") == "USD" else "NT$"
     eps_val, eps_type = get_validated_eps(stock, current_price)
     bvps = info.get("bookValue", 0.0) or 0.0
@@ -173,28 +149,37 @@ def evaluate_stock(ticker_symbol):
     sector_type = get_sector_type(ticker_symbol)
 
     report_lines = [
-        "🤖 *【半導體自動估值日報】*",
-        f"🌐 **市場**：{'🇺🇸 美股' if currency_symbol == '$' else '🇹🇼 台股'}",
-        f"📌 **標的**：`{ticker_symbol}` ({stock_name})",
+        f"📌 **{stock_name}** (`{ticker_symbol}`)",
         f"💵 **當前股價**：`{currency_symbol}{current_price:.2f}`",
-        "----------------------------------",
     ]
 
-    # A: IC 設計
+    # A: IC 設計 (含成長率平滑護欄)
     if sector_type == "IC_DESIGN":
-        earnings_growth = info.get("earningsGrowth", 0.15) or 0.15
-        target_pe = earnings_growth * 100
+        raw_growth = info.get("earningsGrowth", 0.15) or 0.15
+
+        # 數值修正：大於 1 時轉換為小數
+        if raw_growth > 1.0:
+            raw_growth = raw_growth / 100.0
+
+        # 平滑護欄：上限 35%，下限 5%
+        capped_growth = max(0.05, min(raw_growth, 0.35))
+
+        target_pe = capped_growth * 100
         fair_price_pe = eps_val * target_pe
         discount_price = fair_price_pe * 0.8
 
         report_lines.extend(
             [
-                "🏷️ *估值模型*：`P/E & PEG 成長模型`",
                 f"• EPS ({eps_type})：`{currency_symbol}{eps_val:.2f}` | P/E：`{pe_ratio:.1f}x`",
-                f"• 預估成長率：`{earnings_growth * 100:.1f}%`",
-                f"• **PEG=1.0 合理價**：`{currency_symbol}{fair_price_pe:.2f}`",
-                f"• **安全邊際價 (8折)**：`{currency_symbol}{discount_price:.2f}`",
-                f"\n💡 *訊號*：{'🟢 低於安全邊際價！' if current_price <= discount_price else '🟡 高於安全邊際，觀察成長續航力。'}",
+                f"• 預估成長率：`{capped_growth * 100:.1f}%`"
+                + (
+                    f" *(原始 `{raw_growth * 100:.0f}%` 已平滑)*"
+                    if raw_growth > 0.35
+                    else ""
+                ),
+                f"• **合理價 (PEG=1.0)**：`{currency_symbol}{fair_price_pe:.2f}`",
+                f"• **安全邊際 (8折)**：`{currency_symbol}{discount_price:.2f}`",
+                f"💡 *訊號*：{'🟢 低於安全邊際' if current_price <= discount_price else '🟡 高於安全邊際'}",
             ]
         )
 
@@ -211,11 +196,10 @@ def evaluate_stock(ticker_symbol):
 
         report_lines.extend(
             [
-                "🏷️ *估值模型*：`EV/EBITDA 重資產模型`",
-                f"• 當前 EV/EBITDA：`{ev_ebitda:.2f}x`",
-                f"• **目標 ({target_ev_ebitda:.1f}x) 合理價**：`{currency_symbol}{fair_price_ev:.2f}`",
-                f"• **安全邊際價 (85折)**：`{currency_symbol}{discount_price:.2f}`",
-                f"\n💡 *訊號*：{'🟢 估值合理偏低！' if current_price <= discount_price else '🟡 產能折舊仍高，持續觀察擴廠。'}",
+                f"• EV/EBITDA：`{ev_ebitda:.2f}x`",
+                f"• **合理價 ({target_ev_ebitda:.1f}x)**：`{currency_symbol}{fair_price_ev:.2f}`",
+                f"• **安全邊際 (85折)**：`{currency_symbol}{discount_price:.2f}`",
+                f"💡 *訊號*：{'🟢 估值合理偏低' if current_price <= discount_price else '🟡 估值平實/偏高'}",
             ]
         )
 
@@ -227,28 +211,25 @@ def evaluate_stock(ticker_symbol):
         buy_target_price = eps_val * low_pe
 
         status = (
-            "🟢 估值低檔建倉區。"
+            "🟢 估值低檔建倉區"
             if current_price <= buy_target_price
             else (
-                "🔵 處於合理估值區。"
+                "🔵 合理估值區"
                 if current_price <= fair_price
                 else (
-                    "🟡 已反映樂觀預期。"
+                    "🟡 已反映樂觀預期"
                     if current_price <= bull_target_price
-                    else "🔴 高於樂觀目標，注意風險。"
+                    else "🔴 高於樂觀目標"
                 )
             )
         )
 
         report_lines.extend(
             [
-                f"🏷️ *估值模型*：`HBM P/E 高成長模型 ({eps_type})`",
-                f"• BVPS：`{currency_symbol}{bvps:.2f}` | P/B：`{pb_ratio:.2f}x`",
-                f"• EPS：`{currency_symbol}{eps_val:.2f}` | P/E：`{pe_ratio:.2f}x`",
-                f"• 🎯 **樂觀價 (25x)**：`{currency_symbol}{bull_target_price:.2f}`",
-                f"• ⚖️ **合理價 (20x)**：`{currency_symbol}{fair_price:.2f}`",
-                f"• 💰 **低檔價 (15x)**：`{currency_symbol}{buy_target_price:.2f}`",
-                f"\n💡 *綜合評估*：{status}",
+                f"• EPS：`{currency_symbol}{eps_val:.2f}` | P/E：`{pe_ratio:.1f}x`",
+                f"• **低檔價 (15x)**：`{currency_symbol}{buy_target_price:.2f}` | **合理價 (20x)**：`{currency_symbol}{fair_price:.2f}`",
+                f"• **樂觀價 (25x)**：`{currency_symbol}{bull_target_price:.2f}`",
+                f"💡 *訊號*：{status}",
             ]
         )
 
@@ -260,11 +241,10 @@ def evaluate_stock(ticker_symbol):
 
         report_lines.extend(
             [
-                "🏷️ *估值模型*：`P/B 週期模型`",
                 f"• BVPS：`{currency_symbol}{bvps:.2f}` | P/B：`{pb_ratio:.2f}x`",
                 f"• **谷底買點 (P/B {low_pb}x)**：`{currency_symbol}{buy_target_price:.2f}`",
                 f"• **合理價值 (P/B {fair_pb}x)**：`{currency_symbol}{fair_price:.2f}`",
-                f"\n💡 *訊號*：{'🟢 景氣谷底建倉區' if pb_ratio <= low_pb else ('🔴 景氣高點狂歡區' if pb_ratio >= high_pb else '🟡 週期中段，關注報價。')}",
+                f"💡 *訊號*：{'🟢 景氣谷底區' if pb_ratio <= low_pb else ('🔴 景氣高點區' if pb_ratio >= high_pb else '🟡 週期中段')}",
             ]
         )
 
@@ -273,10 +253,9 @@ def evaluate_stock(ticker_symbol):
         fair_price = eps_val * 15.0
         report_lines.extend(
             [
-                "🏷️ *估值模型*：`綜合成熟企業模型`",
-                f"• 目前 P/E：`{pe_ratio:.1f}x` | P/B：`{pb_ratio:.2f}x`",
-                f"• **15倍 P/E 基準合理價**：`{currency_symbol}{fair_price:.2f}`",
-                f"\n💡 *訊號*：{'🟢 股價偏低' if current_price < fair_price else '🟡 股價平實或偏高'}",
+                f"• P/E：`{pe_ratio:.1f}x` | P/B：`{pb_ratio:.2f}x`",
+                f"• **15倍 P/E 基底合理價**：`{currency_symbol}{fair_price:.2f}`",
+                f"💡 *訊號*：{'🟢 股價偏低' if current_price < fair_price else '🟡 股價平實'}",
             ]
         )
 
@@ -284,18 +263,25 @@ def evaluate_stock(ticker_symbol):
 
 
 def run_job():
-    """執行全自動檢索與推播"""
-    all_tickers = get_auto_tickers()
-    print(f"🚀 開始評估共 {len(all_tickers)} 檔台美股標的...\n")
+    """執行評估並整合成 1 封總報推播至 Telegram"""
+    print(f"🚀 開始評估前 {len(TOP_10_TICKERS)} 大台美半導體龍頭標的...\n")
 
-    for ticker in all_tickers:
+    reports = ["🤖 *【台美半導體前十大龍頭估值日報】*\n"]
+
+    for ticker in TOP_10_TICKERS:
         try:
             report = evaluate_stock(ticker)
-            print(report)
-            print("\n" + "=" * 40 + "\n")
-            send_telegram_message(report)
+            reports.append(report)
         except Exception as e:
-            print(f"⚠️ 跳過 {ticker} (無法取得資料或計算異常): {e}")
+            print(f"⚠️ 跳過 {ticker}: {e}")
+
+    # 以分隔線組合為一封整潔的 Telegram 訊息
+    full_message = "\n\n----------------------------------\n\n".join(reports)
+
+    print(full_message)
+    print("\n" + "=" * 40 + "\n")
+
+    send_telegram_message(full_message)
 
 
 if __name__ == "__main__":
