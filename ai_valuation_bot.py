@@ -129,7 +129,7 @@ def get_sector_type(ticker_symbol):
 
 
 def evaluate_stock(ticker_symbol):
-    """估值運算核心 (含成長率平滑護欄與中文名稱)"""
+    """估值運算核心 (優化後的機構估值模型)"""
     stock = yf.Ticker(ticker_symbol)
     info = stock.info
 
@@ -153,40 +153,29 @@ def evaluate_stock(ticker_symbol):
         f"💵 **當前股價**：`{currency_symbol}{current_price:.2f}`",
     ]
 
-    # A: IC 設計 (含成長率平滑護欄)
+    # A: IC 設計 (改採動態 P/E Band 模型)
     if sector_type == "IC_DESIGN":
-        raw_growth = info.get("earningsGrowth", 0.15) or 0.15
-
-        # 數值修正：大於 1 時轉換為小數
-        if raw_growth > 1.0:
-            raw_growth = raw_growth / 100.0
-
-        # 平滑護欄：上限 35%，下限 5%
-        capped_growth = max(0.05, min(raw_growth, 0.35))
-
-        target_pe = capped_growth * 100
+        # 給予 AI 旗艦龍頭較高評級，一般 IC 設計給予常態評級
+        target_pe = (
+            30.0 if ticker_symbol in ["NVDA", "AVGO", "AMD"] else 22.0
+        )
         fair_price_pe = eps_val * target_pe
-        discount_price = fair_price_pe * 0.8
+        discount_price = fair_price_pe * 0.85
 
         report_lines.extend(
             [
-                f"• EPS ({eps_type})：`{currency_symbol}{eps_val:.2f}` | P/E：`{pe_ratio:.1f}x`",
-                f"• 預估成長率：`{capped_growth * 100:.1f}%`"
-                + (
-                    f" *(原始 `{raw_growth * 100:.0f}%` 已平滑)*"
-                    if raw_growth > 0.35
-                    else ""
-                ),
-                f"• **合理價 (PEG=1.0)**：`{currency_symbol}{fair_price_pe:.2f}`",
-                f"• **安全邊際 (8折)**：`{currency_symbol}{discount_price:.2f}`",
-                f"💡 *訊號*：{'🟢 低於安全邊際' if current_price <= discount_price else '🟡 高於安全邊際'}",
+                f"• EPS ({eps_type})：`{currency_symbol}{eps_val:.2f}` | 當前 P/E：`{pe_ratio:.1f}x`",
+                f"• **合理價 ({target_pe:.0f}x P/E)**：`{currency_symbol}{fair_price_pe:.2f}`",
+                f"• **安全邊際 (85折)**：`{currency_symbol}{discount_price:.2f}`",
+                f"💡 *訊號*：{'🟢 低於安全邊際' if current_price <= discount_price else ('🔵 處於合理估值區' if current_price <= fair_price_pe else '🟡 偏向樂觀估值區')}",
             ]
         )
 
-    # B: 晶圓代工 / 重資產
+    # B: 晶圓代工 / 封測重資產 (調升 EV/EBITDA 目標倍數)
     elif sector_type == "FOUNDRY_CAPEX":
         ev_ebitda = info.get("enterpriseToEbitda", 0.0) or 0.0
-        target_ev_ebitda = 11.0
+        # 台積電享先進製程溢價給予 18x，日月光等封測龍頭給予 14x
+        target_ev_ebitda = 18.0 if ticker_symbol == "2330.TW" else 14.0
         fair_price_ev = (
             current_price * (target_ev_ebitda / ev_ebitda)
             if ev_ebitda > 0
@@ -197,21 +186,21 @@ def evaluate_stock(ticker_symbol):
         report_lines.extend(
             [
                 f"• EV/EBITDA：`{ev_ebitda:.2f}x`",
-                f"• **合理價 ({target_ev_ebitda:.1f}x)**：`{currency_symbol}{fair_price_ev:.2f}`",
+                f"• **合理價 ({target_ev_ebitda:.1f}x EV/EBITDA)**：`{currency_symbol}{fair_price_ev:.2f}`",
                 f"• **安全邊際 (85折)**：`{currency_symbol}{discount_price:.2f}`",
-                f"💡 *訊號*：{'🟢 估值合理偏低' if current_price <= discount_price else '🟡 估值平實/偏高'}",
+                f"💡 *訊號*：{'🟢 估值低於安全邊際' if current_price <= discount_price else ('🔵 處於合理估值區' if current_price <= fair_price_ev else '🟡 估值偏高')}",
             ]
         )
 
-    # C: AI 記憶體 / HBM
+    # C: AI 記憶體 / HBM (維持高成長 P/E 區間)
     elif sector_type == "AI_MEMORY_HBM":
-        low_pe, fair_pe, high_pe = 15.0, 20.0, 25.0
+        low_pe, fair_pe, high_pe = 18.0, 22.0, 28.0
         bull_target_price = eps_val * high_pe
         fair_price = eps_val * fair_pe
         buy_target_price = eps_val * low_pe
 
         status = (
-            "🟢 估值低檔建倉區"
+            "🟢 低檔建倉區"
             if current_price <= buy_target_price
             else (
                 "🔵 合理估值區"
@@ -226,35 +215,35 @@ def evaluate_stock(ticker_symbol):
 
         report_lines.extend(
             [
-                f"• EPS：`{currency_symbol}{eps_val:.2f}` | P/E：`{pe_ratio:.1f}x`",
-                f"• **低檔價 (15x)**：`{currency_symbol}{buy_target_price:.2f}` | **合理價 (20x)**：`{currency_symbol}{fair_price:.2f}`",
-                f"• **樂觀價 (25x)**：`{currency_symbol}{bull_target_price:.2f}`",
+                f"• EPS：`{currency_symbol}{eps_val:.2f}` | 當前 P/E：`{pe_ratio:.1f}x`",
+                f"• **低檔價 (18x)**：`{currency_symbol}{buy_target_price:.2f}` | **合理價 (22x)**：`{currency_symbol}{fair_price:.2f}`",
+                f"• **樂觀價 (28x)**：`{currency_symbol}{bull_target_price:.2f}`",
                 f"💡 *訊號*：{status}",
             ]
         )
 
-    # D: 傳統記憶體 (P/B 週期)
+    # D: 傳統記憶體 (調升 P/B 景氣循環倍數)
     elif sector_type == "MEMORY_CYCLE":
-        low_pb, fair_pb, high_pb = 1.0, 1.5, 2.2
+        low_pb, fair_pb, high_pb = 1.5, 2.2, 3.2
         buy_target_price = bvps * low_pb
         fair_price = bvps * fair_pb
 
         report_lines.extend(
             [
-                f"• BVPS：`{currency_symbol}{bvps:.2f}` | P/B：`{pb_ratio:.2f}x`",
+                f"• BVPS：`{currency_symbol}{bvps:.2f}` | 當前 P/B：`{pb_ratio:.2f}x`",
                 f"• **谷底買點 (P/B {low_pb}x)**：`{currency_symbol}{buy_target_price:.2f}`",
                 f"• **合理價值 (P/B {fair_pb}x)**：`{currency_symbol}{fair_price:.2f}`",
-                f"💡 *訊號*：{'🟢 景氣谷底區' if pb_ratio <= low_pb else ('🔴 景氣高點區' if pb_ratio >= high_pb else '🟡 週期中段')}",
+                f"💡 *訊號*：{'🟢 景氣谷底區' if pb_ratio <= low_pb else ('🔴 景氣高點區' if pb_ratio >= high_pb else '🟡 週期中段/熱絡區')}",
             ]
         )
 
     # E: 一般通用模型
     else:
-        fair_price = eps_val * 15.0
+        fair_price = eps_val * 20.0
         report_lines.extend(
             [
                 f"• P/E：`{pe_ratio:.1f}x` | P/B：`{pb_ratio:.2f}x`",
-                f"• **15倍 P/E 基底合理價**：`{currency_symbol}{fair_price:.2f}`",
+                f"• **20倍 P/E 基底合理價**：`{currency_symbol}{fair_price:.2f}`",
                 f"💡 *訊號*：{'🟢 股價偏低' if current_price < fair_price else '🟡 股價平實'}",
             ]
         )
