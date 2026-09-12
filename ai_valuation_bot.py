@@ -8,10 +8,10 @@ import requests
 # 💬 Telegram 發送模組
 # ==============================================================================
 def send_telegram_message(message, max_length=3500):
-    bot_token = os.environ.get("TG_BOT_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not bot_token or not chat_id:
-        print("⚠️ 未設定 TG_BOT_TOKEN 或 TG_CHAT_ID，無法發送 Telegram 訊息。")
+        print("⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，無法發送 Telegram 訊息。")
         return
     
     bot_token = str(bot_token).strip()
